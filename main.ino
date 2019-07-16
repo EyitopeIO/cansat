@@ -2,6 +2,7 @@
 #include <SoftwareSerial.h>
 #include <TinyGPS++.h>
 #include <dht11.h>
+#include <Wire.h>
 
 #define ALT_ABOVE_SEA_LEVEL 200
 #define RESPONSE_TIME 10000 //ten seconds
@@ -29,16 +30,17 @@ const String web_address = "";
 const String port = "";
 
 float lattitude, longitude; //returned from gps serial
-unsigned int altitude_; //bmp variable
-double _temperature, pressure, pressure0, a; //bmp variables
+double temperature_, pressure, pressure0, pressure_alt, altitude_; //bmp variables
 float humidity_, dewPoint_;   //dht variables
 char status;
 
 String all_data_to_send = "";
 unsigned char DATA_in[100];
 
-byte warning_light = 9;
+byte problem_light = 9;
 byte dht_pin = 8;
+
+bool ready_ = false;
 
 // (TX, RX)
 SoftwareSerial gpsSerial(4, 3);   // gps module
@@ -49,9 +51,10 @@ dht11 dht;
 
 void setup()
 {
-  pinMode(A0, INPUT);
-  pinMode(warning_light, OUTPUT);
-  pinMode(dht_pin, 8);
+  pinMode(A0, INPUT); //for air quality sensor
+  pinMode(A1, INPUT); //for solar radiation
+  pinMode(problem_light, OUTPUT);
+  pinMode(dht_pin, INPUT);
 
   Serial.begin(9600);
   while (!Serial);
@@ -59,7 +62,9 @@ void setup()
   gsmSerial.begin(9600);
   if (bmp.begin())
   {
-    Serial.println("BMP180 init success");
+    Serial.println("BMP180 init success"); 
+    wait_for_bmp_data();
+    pressure_alt = bmp.getPressure(pressure, temperature_); //needed for altitude calculations
   }
   else
   {
@@ -76,8 +81,11 @@ void loop()
   fetch_humidity_and_dewpoint_data();
   fetch_solar_radiation_data();
   fetch_air_quality_data();
-  parse_data_to_send();
-  setup_network_and_send();
+  if (ready_ == true)
+  {
+    parse_data_to_send();
+    setup_network_and_send();
+  }
   delay(10000);
 }
 
@@ -90,43 +98,63 @@ void parse_data_to_send(void)
 
 void wait_for_bmp_data(void)
 {
-  // Loop here getting pressure readings every 10 seconds.
+
+  //Must first get a temperature measurement to perform a pressure reading.
   status = bmp.startTemperature();
   if (status != 0)
   {
-    // Wait for the measurement to complete:
     delay(status);
-    status = bmp.getTemperature(_temperature);
+    status = bmp.getTemperature(temperature_);
     if (status != 0)
     {
+      delay(status);
       Serial.println("temperature: ");
-      Serial.print(_temperature, 2);
+      Serial.print(temperature_, 2);
       status = bmp.startPressure(3);
       if (status != 0)
       {
         delay(status);
-        status = bmp.getPressure(pressure, _temperature);
+        status = bmp.getPressure(pressure, temperature_);
         if (status != 0)
         {
-          // Print out the measurement:
+          delay(status);
           Serial.println(" absolute pressure: ");
           Serial.print(pressure, 2);
           pressure0 = bmp.sealevel(pressure, ALT_ABOVE_SEA_LEVEL); // set your current altitude above sea level
           Serial.print("relative (sea-level) pressure: ");
           Serial.print(pressure0, 2);
           Serial.print(" mb, ");
+          if (status != 0)
+          {
+            delay(status);
+            altitude_=bmp.altitude(pressure, pressure_alt);
+            ready_ = true;  //successfully gotten all bmp data
+          }
+          
         }
         else
+        {
+          ready_ = false;
           Serial.println("error retrieving pressure measurement\n");
+        }
       }
       else
+      {
+        ready_ = false;
         Serial.println("error starting pressure measurement\n");
+      }
     }
     else
+    {
+      ready_ = false;
       Serial.println("error retrieving temperature measurement\n");
+    }
   }
   else
+  {
+    ready_ = false;
     Serial.println("error starting temperature measurement\n");
+  }
 }
 
 void wait_for_gps_data(void)
@@ -138,8 +166,14 @@ void wait_for_gps_data(void)
     {
       lattitude = gps.location.lat();
       longitude = gps.location.lng();
+      ready_ = true;
       break;
     }
+    else
+    {
+      ready_ = false;
+    }
+    
   }
 }
 
